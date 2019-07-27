@@ -1,3 +1,9 @@
+#Excel
+*.xlsx
+
+#Html?
+*.html
+
 # History files
 .Rhistory
 .Rapp.history

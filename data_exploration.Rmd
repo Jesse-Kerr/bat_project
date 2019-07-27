@@ -1,0 +1,190 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+# Bringing in external environment data
+
+There are 4 different weather stations around Austin, including 
+Austin_camp_mabry, AUSTIN 33 NW,and two airports. Austin_camp_mabry is the 
+closest to the Congress Avenue Bridge, so I use their data.
+
+```{r}
+library(rnoaa)
+library(tidyverse)
+
+austin_camp_mabry <- 'GHCND:USW00013958'
+bergstrom <- "GHCND:USW00013904"
+token <- "QfLVEGnpmcHawEKnrtUbWiKdGcIUKLbk"
+
+```
+
+We can begin by seeing what data is available for this weather station.
+We see that data coverage is 100%, and the data stretches from 1938 to 
+2019-05-17, 8 days before the present day. 
+
+Looking at the available datasets, only three are available past 2018: "Global summary of the month," (??), "Global summary of the year" (??), and "Daily 
+Summaries".
+
+```{r}
+ncdc_datasets(stationid = austin_camp_mabry, token = token)$data %>%
+  select(maxdate, name) %>%
+  filter(maxdate >= "2018-01-01")
+
+```
+
+Using the `ncdc` function, I pull the Daily Summaries from this weather station.
+I do this month by month, since the most cells that can be returned per API call 
+is 1000.
+
+```{r}
+
+pull_ndcd_data <- function(startdate, enddate) {
+  
+  # From the help page: add_units parameter is experimental - USE WITH CAUTION.
+  mabry_data <- rnoaa::ncdc(datasetid = "GHCND", startdate = startdate,  
+                  enddate = enddate, stationid = austin_camp_mabry, 
+                  token = token, includemetadata = FALSE, limit = 1000,
+                  add_units = F)
+  # We don't need the meta part of this list - just the data.
+  mabry_data <- mabry_data$data
+  return(mabry_data)
+}
+
+# Create a list of dates comprising every month in 2014. These dates need to be
+# transformed back to character format for the API call.
+mabry_data2014 <- map2_dfr(
+  .x = as.character(seq(as.Date("2014/01/01"), by = "month", length.out = 12)),
+  .y = as.character(seq(as.Date("2014/01/31"), by = "month", length.out = 12)), 
+  ~ pull_ndcd_data(startdate = .x, enddate = .y))
+
+```
+
+How many rows are we getting per day?
+```{r}
+mabry_data2014 %>%
+  group_by(date) %>%
+  summarise(n = n()) %>%
+  group_by(n) %>%
+  count()
+```
+
+For these 31 days, 27 have 10 different pieces of data, and 4 have 11.
+
+```{r}
+mabry_data2014 %>%
+  group_by(date) %>%
+  
+  # Get a list of the different datatypes for each date
+  summarise(datatypes = list(datatype)) %>%
+
+  # Count how many datatypes for each date.
+  mutate(num_datatypes = map_int(datatypes, length)) %>%
+
+  # Need to join the list, since distinct does not support lists.
+  mutate(datatypes =  map_chr(datatypes, str_c, collapse = ', ')) %>%
+
+  # See if these are different for each day (there should be only two distinct)
+  # Get one example of each
+  group_by(datatypes) %>%
+  slice(1)
+
+```
+
+From the vignette and package information:
+fl_c = completeness
+fl_d = day
+fl_m = measurement
+fl_q = quality
+fl_s = source
+fl_t = time
+fl_cmiss = consecutive missing
+fl_miss = missing
+fl_u = units
+
+For now at least, I will ignore those and simply rearrange the table so that 
+each row represents a date, and each column a datatype. 
+
+```{r}
+mabry_data2014 <- mabry_data2014 %>%
+  
+  #workaround for spread to work
+  group_by(datatype) %>%
+  mutate(grouped_id = row_number()) %>%
+
+  #remove superfluous data 
+  select(c(date, datatype, value, grouped_id)) %>%
+  spread(key= datatype, value = value) %>%
+
+  # Due to the workaround, some columns have NA values. We should have only 365 
+  # rows, but instead we have 477. Take the value for each row that doesn't have 
+  # NA.
+  ungroup() %>%
+  group_by(date) %>%
+  summarise_all(~ first(na.omit(.))) %>%
+  
+  #Now remove the grouped_id column
+  select(-grouped_id) %>%
+
+  #change TMAX and TMIN to reflect the fact that they are Celsius tenths.
+  mutate_at(.vars = c("TMAX", "TMIN"), ~ ./10)
+
+yo <- mabry_data2014 %>%
+  # Change date to actual datetype column
+  mutate(date = as.Date(date))
+```
+
+AWND - average daily wind speed
+
+# Begin working with bat data
+
+His data is extremely difficult.
+
+The most important thing to understand is that there are two types of logs- the 
+Lone Star boats and his radar measurements. Obviously the Lone Star logs are the
+most reliable, but we don't have access to that data outside of the season. So
+sometimes we need to use the radar, but there is some lag between them- that is 
+what I am going to try to figure out:
+
+* Average lag 
+* Average lag by season.
+
+He has data from the CAB boat logs and from his measurement of the radar stuff. 
+
+```{r}
+
+#types = rep('text', 58)
+#types[c(2, 4, 5, 6, 7, 8)] = 'date'
+
+cab <- re
+cab <- read_excel(skip = 2, path = './CAB only 25May2019.xlsx', 
+                          sheet = 3, col_names = TRUE, 
+                  col_types = c('date', 'date', 'text', 'date','date',
+                                'date', 'date', 'numeric', 'numeric', 'numeric',
+                                'numeric','text', 'numeric','numeric', 'numeric',
+                                'numeric', 'numeric', 'date', 'text'))
+
+
+# get column types
+map(cab, typeof)
+
+# change column names
+colnames(cab) <- map(colnames(cab), 
+                     ~ str_replace_all(., " ", "_") %>%
+                       str_remove_all("2014-16|2014_-16|^_"))
+
+# Change date columns to datetime columns
+yo <- cab %>%
+  mutate_at(.vars = c("lone_star_cab_times", 'time_of_sunrise', 
+                      'time_of_sunset', 'time_of_moon_rise', 'time_of_moon_set',
+                      'local_time_1st_noted_on_soar_minus_lone_star_av._lag'),
+            ~ format(., "%H:%M:%S"))
+
+cab %>%
+  ggplot() +
+  geom_line(aes(`local_time_date_(utc-1)`, lone_star_cab_times, color = day_of_week)) +
+  geom_line(aes(`local_time_date_(utc-1)`, time_of_sunset), color = 'red') +
+  theme(legend.position = "right")
+
+```
+
